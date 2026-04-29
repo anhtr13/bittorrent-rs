@@ -1,9 +1,5 @@
 use std::env;
 
-// Available if you need it!
-// use serde_bencode
-
-#[allow(dead_code)]
 fn decode_bencoded_value(encoded_value: &str) -> serde_json::Value {
     // If encoded_value starts with a digit, it's a number
     if encoded_value.chars().next().unwrap().is_ascii_digit() {
@@ -18,19 +14,17 @@ fn decode_bencoded_value(encoded_value: &str) -> serde_json::Value {
     }
 }
 
-// Usage: your_program.sh decode "<encoded_value>"
 fn main() {
     let args: Vec<String> = env::args().collect();
     let command = &args[1];
 
     if command == "decode" {
-        // You can use print statements as follows for debugging, they'll be visible when running tests.
-        eprintln!("Logs from your program will appear here!");
+        eprintln!("Logs from program:");
 
-        // TODO: Uncomment the code below to pass the first stage
-        // let encoded_value = &args[2];
-        // let decoded_value = decode_bencoded_value(encoded_value);
-        // println!("{}", decoded_value.to_string());
+        let encoded_value = &args[2];
+        let decoded_value = decode_bencoded_value(encoded_value);
+
+        println!("{}", decoded_value.to_string());
     } else {
         println!("unknown command: {}", args[1])
     }
