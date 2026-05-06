@@ -14,16 +14,16 @@ pub struct Info {
     pub hash: [u8; 20],
 }
 
-pub struct MetaInfo {
+pub struct Torrent {
     pub announce: String,
     pub info: Info,
 }
 
-impl MetaInfo {
+impl Torrent {
     pub fn from_file(file_path: &str) -> Result<Self> {
         let data = fs::read(file_path)?;
         let Bencoding::Dictionary(dict) = Bencoding::decode(data)? else {
-            anyhow::bail!("metainfo must be encode as dictionary");
+            anyhow::bail!("torrent must be encode as dictionary");
         };
         let Some(Bencoding::String(url)) = dict.get("announce") else {
             anyhow::bail!("announce must be encode as string")
@@ -58,9 +58,9 @@ impl MetaInfo {
         let pieces: Result<Vec<_>> = pieces
             .chunks(20)
             .map(|chunk| {
-                chunk
-                    .try_into()
-                    .map_err(|_| anyhow::Error::msg("failed to split pieces into 20 bytes arrays"))
+                chunk.try_into().map_err(|_| {
+                    anyhow::Error::msg("failed to split pieces into set of 20 bytes array")
+                })
             })
             .collect();
         let pieces = pieces?;

@@ -1,6 +1,6 @@
-pub mod connection;
 pub mod encoding;
-pub mod metainfo;
+pub mod peer;
+pub mod torrent;
 
 use std::{io::Write, net::TcpStream};
 
@@ -8,9 +8,9 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 use crate::bittorent::{
-    connection::{Handshake, peers_discovery, random_peer_id},
     encoding::Bencoding,
-    metainfo::MetaInfo,
+    peer::{Message, MessageId, discover_peers, download_piece, establish_hanshake, new_peer_id},
+    torrent::Torrent,
 };
 
 #[derive(Debug, Subcommand)]
@@ -19,13 +19,21 @@ pub enum Command {
     Decode { encoded_value: String },
 
     #[command(name = "info")]
-    Info { file_path: String },
+    Info { torrent: String },
 
     #[command(name = "peers")]
-    Peers { file_path: String },
+    Peers { torrent: String },
 
     #[command(name = "handshake")]
-    Handshake { file_path: String, addr: String },
+    Handshake { torrent: String, addr: String },
+
+    #[command(name = "download_piece")]
+    DownloadPiece {
+        torrent: String,
+        #[arg(short = 'o', long = "output")]
+        output: String,
+        piece_index: u32,
+    },
 }
 
 #[derive(Parser)]
@@ -42,38 +50,81 @@ impl Cli {
                 println!("{}", decoded_value);
                 Ok(())
             }
-            Command::Info { file_path } => {
-                let metainfo = MetaInfo::from_file(&file_path)?;
-                println!("Tracker URL: {}", metainfo.announce);
-                println!("Length: {}", metainfo.info.length);
-                println!("Info Hash: {}", hex::encode(metainfo.info.hash));
-                println!("Piece Length: {}", metainfo.info.piece_length);
+            Command::Info { torrent } => {
+                let torrent = Torrent::from_file(&torrent)?;
+                println!("Tracker URL: {}", torrent.announce);
+                println!("Length: {}", torrent.info.length);
+                println!("Info Hash: {}", hex::encode(torrent.info.hash));
+                println!("Piece Length: {}", torrent.info.piece_length);
                 println!("Piece Hashes:");
-                for piece in metainfo.info.pieces {
+                for piece in torrent.info.pieces {
                     println!("{}", hex::encode(piece));
                 }
                 Ok(())
             }
-            Command::Peers { file_path } => {
-                let metainfo = MetaInfo::from_file(&file_path)?;
-                let peer_id = random_peer_id();
-                let (_, peers) = peers_discovery(&metainfo, &peer_id)?;
+            Command::Peers { torrent } => {
+                let torrent = Torrent::from_file(&torrent)?;
+                let peer_id = new_peer_id();
+                let (_, peers) = discover_peers(
+                    &torrent.announce,
+                    &torrent.info.hash,
+                    &peer_id,
+                    6881,
+                    0,
+                    0,
+                    torrent.info.length,
+                    true,
+                )?;
                 for peer in peers {
                     println!("{peer}");
                 }
                 Ok(())
             }
-            Command::Handshake { file_path, addr } => {
-                let metainfo = MetaInfo::from_file(&file_path)?;
-                let peer_id: [u8; 20] = random_peer_id().into_bytes().try_into().map_err(|_| {
-                    anyhow::Error::msg("failed to convert peer_id to 20 bytes array")
-                })?;
-                let handshake = Handshake::new(metainfo.info.hash, peer_id);
-                let mut peer = TcpStream::connect(addr)?;
-                peer.write_all(&handshake.into_bytes())?;
-                let h = Handshake::from_peer(&mut peer)?;
-                println!("Peer ID: {}", hex::encode(h.peer_id));
+            Command::Handshake { torrent, addr } => {
+                let torrent = Torrent::from_file(&torrent)?;
+                let peer_id = new_peer_id();
+                let mut stream = TcpStream::connect(addr)?;
+                let peer_id_back = establish_hanshake(&mut stream, &torrent.info.hash, &peer_id)?;
+                println!("Peer ID: {}", hex::encode(peer_id_back));
                 Ok(())
+            }
+            Command::DownloadPiece {
+                output,
+                torrent,
+                piece_index,
+            } => {
+                let torrent = Torrent::from_file(&torrent)?;
+                let peer_id = new_peer_id();
+                let (_, peers) = discover_peers(
+                    &torrent.announce,
+                    &torrent.info.hash,
+                    &peer_id,
+                    6881,
+                    0,
+                    0,
+                    torrent.info.length,
+                    true,
+                )?;
+                let mut stream = TcpStream::connect(&peers[0])?;
+
+                let _ = establish_hanshake(&mut stream, &torrent.info.hash, &peer_id)?;
+
+                let bitfield = Message::from_stream(&mut stream)?;
+                anyhow::ensure!(bitfield.id == MessageId::Bitfield);
+
+                let interested = Message::new(MessageId::Interested, Vec::new());
+                stream.write_all(&interested.into_bytes())?;
+
+                let unchoke = Message::from_stream(&mut stream)?;
+                anyhow::ensure!(unchoke.id == MessageId::Unchoke);
+
+                download_piece(
+                    &mut stream,
+                    piece_index,
+                    torrent.info.piece_length,
+                    torrent.info.length,
+                    &output,
+                )
             }
         }
     }
