@@ -4,3 +4,16 @@
 
 A BitTorrent client that's capable of parsing a .torrent file and downloading a file from a peer.
 Build to learn about how torrent files are structured, HTTP trackers, BitTorrent’s Peer Protocol, pipelining, etc.
+
+## Build & Run
+
+```bash
+# Release build
+cargo build --release
+
+# Download from a torrent file
+./target/release/my-bittorrent download [sample.torrent] -o [output]
+
+# Download from a magnet link
+./target/release/my-bittorrent magnet_download [magnet_link] -o [output]
+```
