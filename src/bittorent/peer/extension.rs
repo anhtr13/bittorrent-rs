@@ -73,14 +73,14 @@ pub enum ExtensionMessageType {
     Reject = 2,
 }
 
-impl TryFrom<i64> for ExtensionMessageType {
+impl TryFrom<u8> for ExtensionMessageType {
     type Error = anyhow::Error;
-    fn try_from(value: i64) -> std::result::Result<Self, Self::Error> {
+    fn try_from(value: u8) -> std::result::Result<Self, Self::Error> {
         match value {
             0 => Ok(Self::Request),
             1 => Ok(Self::Data),
             2 => Ok(Self::Reject),
-            _ => anyhow::bail!(""),
+            _ => anyhow::bail!("not an extesion message"),
         }
     }
 }
@@ -121,7 +121,7 @@ impl ExtensionMessage {
         let Some(Bencoding::Integer(i)) = dict.remove("msg_type") else {
             anyhow::bail!("failed to get msg_type")
         };
-        let msg_type = ExtensionMessageType::try_from(i)?;
+        let msg_type = ExtensionMessageType::try_from(i as u8)?;
         let Some(Bencoding::Integer(i)) = dict.remove("piece") else {
             anyhow::bail!("failed to get piece id")
         };

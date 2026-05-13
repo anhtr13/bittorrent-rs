@@ -25,7 +25,9 @@ use crate::bittorent::{
     torrent::Info,
 };
 
-pub const BLOCK_SIZE: u32 = 16 * 1024;
+const BLOCK_SIZE: u32 = 16 * 1024;
+const MAX_CONNECTING_PEERS: usize = 8;
+const ESTABLISH_PEER_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[allow(clippy::too_many_arguments)]
 pub async fn discover_peers(
@@ -91,14 +93,9 @@ pub async fn hanshake(stream: &mut TcpStream, info_hash: &[u8]) -> Result<Vec<u8
     Ok(buf[48..].to_owned())
 }
 
-pub async fn establish_peers(
-    addrs: &[Arc<String>],
-    info_hash: Arc<[u8]>,
-    max_concurent_peers: usize,
-    timeout: u64,
-) -> Vec<TcpStream> {
-    let max_concurent_peers = max_concurent_peers.min(addrs.len());
-    let (tx, mut rx) = mpsc::channel(max_concurent_peers);
+pub async fn establish_peers(addrs: &[Arc<String>], info_hash: Arc<[u8]>) -> Vec<Peer> {
+    let total_addrs = addrs.len();
+    let (tx, mut rx) = mpsc::channel(total_addrs);
     let mut handles = Vec::new();
     println!("establishing peers...");
     for addr in addrs {
@@ -106,13 +103,13 @@ pub async fn establish_peers(
         let addr = addr.clone();
         let info_hash = info_hash.clone();
         handles.push(tokio::spawn(async move {
-            if let Ok(peer) = establish_peer(addr, info_hash).await {
+            if let Ok(peer) = Peer::establish(addr, info_hash).await {
                 let _ = tx.send(peer).await;
             };
         }));
     }
     let mut peers = Vec::new();
-    let timeout_future = sleep(Duration::from_secs(timeout));
+    let timeout_future = sleep(ESTABLISH_PEER_TIMEOUT);
     tokio::pin!(timeout_future);
     loop {
         tokio::select! {
@@ -120,12 +117,12 @@ pub async fn establish_peers(
                 if let Some(peer) = peer {
                     peers.push(peer);
                 }
-                if peers.len() == max_concurent_peers {
+                if peers.len() == total_addrs.min(MAX_CONNECTING_PEERS) {
                     break;
                 }
             }
             _ = &mut timeout_future => {
-                println!("timeout after {timeout}s");
+                println!("timeout after {ESTABLISH_PEER_TIMEOUT:?}");
                 break;
             }
         }
@@ -137,17 +134,8 @@ pub async fn establish_peers(
     peers
 }
 
-async fn establish_peer(addr: Arc<String>, info_hash: Arc<[u8]>) -> Result<TcpStream> {
-    let mut stream = TcpStream::connect(addr.as_ref()).await?;
-    hanshake(&mut stream, &info_hash).await?;
-    wait_for_bitfield(&mut stream).await?;
-    send_interested(&mut stream).await?;
-    wait_for_unchoke(&mut stream).await?;
-    Ok(stream)
-}
-
 pub async fn download_piece(
-    peers: &[Arc<Mutex<TcpStream>>],
+    peers: &[Arc<Mutex<Peer>>],
     piece_index: u32,
     info: &Info,
     output: Option<&String>,
@@ -174,6 +162,10 @@ pub async fn download_piece(
         let blocks = blocks.clone();
         let piece = piece.clone();
         handles.push(tokio::spawn(async move {
+            let mut peer = peer.lock().await;
+            if !peer.pieces[piece_index as usize] {
+                return;
+            }
             loop {
                 let mut guard = blocks.lock().await;
                 let Some(block_index) = guard.iter().position(|downloaded| !downloaded) else {
@@ -183,15 +175,21 @@ pub async fn download_piece(
                 drop(guard);
                 let offset = block_index as u32 * BLOCK_SIZE;
                 let length = (piece_length - offset).min(BLOCK_SIZE);
-                let (_, data) = download_piece_block(peer.clone(), piece_index, offset, length)
-                    .await
-                    .unwrap_or_else(|e| panic!("Error: {e}"));
-                let mut piece = piece.lock().await;
-                (*piece)[offset as usize..(offset + length) as usize].copy_from_slice(&data);
-                println!(
-                    "Downloaded from piece {}: {} bytes, offset {}",
-                    piece_index, length, offset
-                );
+                match peer.download_piece_block(piece_index, offset, length).await {
+                    Ok((_, data)) => {
+                        let mut piece = piece.lock().await;
+                        (*piece)[offset as usize..(offset + length) as usize]
+                            .copy_from_slice(&data);
+                    }
+                    Err(e) => {
+                        println!(
+                            "Failed to download block from peer {:?}: {e}",
+                            peer.stream.peer_addr()
+                        );
+                        let mut guard = blocks.lock().await;
+                        guard[block_index] = false;
+                    }
+                }
             }
         }));
     }
@@ -207,43 +205,11 @@ pub async fn download_piece(
     let checksum = sha1_hash(&piece_data);
     anyhow::ensure!(&checksum == piece_hash, "checksum miss match");
 
-    println!(
-        "Downloaded piece {}: {} bytes",
-        piece_index,
-        piece_data.len()
-    );
-
     let output = output.unwrap_or(&info.name);
     let mut file = OpenOptions::new().create(true).append(true).open(output)?;
     file.write_all(&piece_data)?;
 
     Ok(())
-}
-
-async fn download_piece_block(
-    stream: Arc<Mutex<TcpStream>>,
-    piece_index: u32,
-    offset: u32,
-    length: u32,
-) -> Result<(u32, Vec<u8>)> {
-    let mut payload = Vec::new();
-    payload.extend(piece_index.to_be_bytes());
-    payload.extend(offset.to_be_bytes());
-    payload.extend(length.to_be_bytes());
-
-    let request = Message::new(MessageId::Request, payload);
-
-    let mut stream = stream.lock().await;
-    stream.write_all(&request.into_bytes()).await?;
-
-    let block = Message::from_stream(&mut stream).await?;
-    anyhow::ensure!(block.id == MessageId::Piece);
-    anyhow::ensure!(block.payload.len() >= 8);
-    anyhow::ensure!(&block.payload[..4] == piece_index.to_be_bytes());
-    anyhow::ensure!(&block.payload[4..8] == offset.to_be_bytes());
-
-    let data = block.payload[8..].to_vec();
-    Ok((offset, data))
 }
 
 pub async fn extension_hanshake(
@@ -280,16 +246,76 @@ pub async fn extension_hanshake(
     Ok((buf[48..].to_owned(), ext_msg_back.m))
 }
 
-pub async fn get_piece_contents(
+pub async fn get_extension_metainfo(
     stream: &mut TcpStream,
     metadata: &ExtensionHandshakeMeta,
-) -> Result<Vec<u8>> {
+) -> Result<Info> {
     let ext_msg = ExtensionMessage::new(metadata.ut_metadata, ExtensionMessageType::Request, 0);
     let msg = Message::new(MessageId::Extension, ext_msg.encode());
     stream.write_all(&msg.into_bytes()).await?;
     let msg_back = Message::from_stream(stream).await?;
     let (_, piece_contents) = ExtensionMessage::decode_response(msg_back.payload)?;
-    Ok(piece_contents)
+    let bvalue = Bencoding::decode(piece_contents)?;
+    let info = Info::decode(bvalue)?;
+    Ok(info)
+}
+
+pub struct Peer {
+    stream: TcpStream,
+    pieces: Vec<bool>,
+}
+
+impl Peer {
+    async fn establish(addr: Arc<String>, info_hash: Arc<[u8]>) -> Result<Self> {
+        let mut stream = TcpStream::connect(addr.as_ref()).await?;
+        hanshake(&mut stream, &info_hash).await?;
+        let bitfield = wait_for_bitfield(&mut stream).await?;
+        send_interested(&mut stream).await?;
+        wait_for_unchoke(&mut stream).await?;
+        let mut pieces = Vec::with_capacity(bitfield.len() * 8);
+        for byte in bitfield {
+            for i in (0..8).rev() {
+                if (byte >> i) & 1 == 1 {
+                    pieces.push(true);
+                } else {
+                    pieces.push(false);
+                }
+            }
+        }
+        Ok(Self { stream, pieces })
+    }
+
+    async fn download_piece_block(
+        &mut self,
+        piece_index: u32,
+        offset: u32,
+        length: u32,
+    ) -> Result<(u32, Vec<u8>)> {
+        let mut payload = Vec::new();
+        payload.extend(piece_index.to_be_bytes());
+        payload.extend(offset.to_be_bytes());
+        payload.extend(length.to_be_bytes());
+
+        let request = Message::new(MessageId::Request, payload);
+        self.stream.write_all(&request.into_bytes()).await?;
+
+        loop {
+            let msg = Message::from_stream(&mut self.stream).await?;
+            match msg.id {
+                MessageId::Choke => wait_for_unchoke(&mut self.stream).await?,
+                MessageId::Unchoke => {}
+                MessageId::Piece => {
+                    anyhow::ensure!(msg.payload.len() >= 8);
+                    anyhow::ensure!(&msg.payload[..4] == piece_index.to_be_bytes());
+                    anyhow::ensure!(&msg.payload[4..8] == offset.to_be_bytes());
+
+                    let data = msg.payload[8..].to_vec();
+                    return Ok((offset, data));
+                }
+                _ => anyhow::bail!("unexpected message id"),
+            }
+        }
+    }
 }
 
 fn generate_peer_id() -> String {

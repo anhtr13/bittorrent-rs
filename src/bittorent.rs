@@ -14,13 +14,11 @@ use crate::bittorent::{
     encoding::Bencoding,
     magnet::Magnet,
     peer::{
-        discover_peers, download_piece, establish_peers, extension_hanshake, get_piece_contents,
-        hanshake,
+        discover_peers, download_piece, establish_peers, extension_hanshake,
+        get_extension_metainfo, hanshake,
     },
-    torrent::{Info, Torrent},
+    torrent::Torrent,
 };
-
-const FETCH_PEER_TIMEOUT: u64 = 10;
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
@@ -143,12 +141,11 @@ impl Cli {
                 )
                 .await?;
                 let addrs: Vec<_> = addrs.into_iter().map(Arc::new).collect();
-                let peers: Vec<_> =
-                    establish_peers(&addrs, Arc::new(torrent.info.hash), 8, FETCH_PEER_TIMEOUT)
-                        .await
-                        .into_iter()
-                        .map(|peer| Arc::new(Mutex::new(peer)))
-                        .collect();
+                let peers: Vec<_> = establish_peers(&addrs, Arc::new(torrent.info.hash))
+                    .await
+                    .into_iter()
+                    .map(|peer| Arc::new(Mutex::new(peer)))
+                    .collect();
                 download_piece(&peers, piece_index, &torrent.info, output.as_ref()).await?;
                 Ok(())
             }
@@ -165,14 +162,15 @@ impl Cli {
                 )
                 .await?;
                 let addrs: Vec<_> = addrs.into_iter().map(Arc::new).collect();
-                let peers: Vec<_> =
-                    establish_peers(&addrs, Arc::new(torrent.info.hash), 8, FETCH_PEER_TIMEOUT)
-                        .await
-                        .into_iter()
-                        .map(|peer| Arc::new(Mutex::new(peer)))
-                        .collect();
-                for idx in 0..torrent.info.pieces.len() {
+                let peers: Vec<_> = establish_peers(&addrs, Arc::new(torrent.info.hash))
+                    .await
+                    .into_iter()
+                    .map(|peer| Arc::new(Mutex::new(peer)))
+                    .collect();
+                let total_pieces = torrent.info.pieces.len();
+                for idx in 0..total_pieces {
                     download_piece(&peers, idx as u32, &torrent.info, output.as_ref()).await?;
+                    println!("downloaded {}/{} pieces", idx + 1, total_pieces);
                 }
                 Ok(())
             }
@@ -216,9 +214,7 @@ impl Cli {
                 let mut stream = TcpStream::connect(&addrs[0]).await?;
                 let (_peer_id_back, metadata) =
                     extension_hanshake(&mut stream, &magnet.info_hash).await?;
-                let piece_contents = get_piece_contents(&mut stream, &metadata).await?;
-                let bencoded = Bencoding::decode(piece_contents)?;
-                let info = Info::decode(bencoded)?;
+                let info = get_extension_metainfo(&mut stream, &metadata).await?;
                 println!("Tracker URL: {}", magnet.tracker_url);
                 println!("Length: {}", info.length);
                 println!("Info Hash: {}", hex::encode(info.hash));
@@ -248,9 +244,7 @@ impl Cli {
                 let mut stream = TcpStream::connect(&addrs[0]).await?;
                 let (_peer_id_back, ext_handshake_meta) =
                     extension_hanshake(&mut stream, &magnet.info_hash).await?;
-                let contents = get_piece_contents(&mut stream, &ext_handshake_meta).await?;
-                let bencoded = Bencoding::decode(contents)?;
-                let info = Info::decode(bencoded)?;
+                let info = get_extension_metainfo(&mut stream, &ext_handshake_meta).await?;
                 let (_, addrs) = discover_peers(
                     &magnet.tracker_url,
                     &info.hash,
@@ -262,12 +256,11 @@ impl Cli {
                 )
                 .await?;
                 let addrs: Vec<_> = addrs.into_iter().map(Arc::new).collect();
-                let peers: Vec<_> =
-                    establish_peers(&addrs, Arc::new(info.hash), 8, FETCH_PEER_TIMEOUT)
-                        .await
-                        .into_iter()
-                        .map(|peer| Arc::new(Mutex::new(peer)))
-                        .collect();
+                let peers: Vec<_> = establish_peers(&addrs, Arc::new(info.hash))
+                    .await
+                    .into_iter()
+                    .map(|peer| Arc::new(Mutex::new(peer)))
+                    .collect();
                 download_piece(&peers, piece_index, &info, output.as_ref()).await?;
                 Ok(())
             }
@@ -286,9 +279,7 @@ impl Cli {
                 let mut stream = TcpStream::connect(&addrs[0]).await?;
                 let (_peer_id_back, ext_handshake_meta) =
                     extension_hanshake(&mut stream, &magnet.info_hash).await?;
-                let contents = get_piece_contents(&mut stream, &ext_handshake_meta).await?;
-                let bencoded = Bencoding::decode(contents)?;
-                let info = Info::decode(bencoded)?;
+                let info = get_extension_metainfo(&mut stream, &ext_handshake_meta).await?;
                 let (_, addrs) = discover_peers(
                     &magnet.tracker_url,
                     &info.hash,
@@ -300,14 +291,15 @@ impl Cli {
                 )
                 .await?;
                 let addrs: Vec<_> = addrs.into_iter().map(Arc::new).collect();
-                let peers: Vec<_> =
-                    establish_peers(&addrs, Arc::new(info.hash), 8, FETCH_PEER_TIMEOUT)
-                        .await
-                        .into_iter()
-                        .map(|peer| Arc::new(Mutex::new(peer)))
-                        .collect();
-                for idx in 0..info.pieces.len() {
+                let peers: Vec<_> = establish_peers(&addrs, Arc::new(info.hash))
+                    .await
+                    .into_iter()
+                    .map(|peer| Arc::new(Mutex::new(peer)))
+                    .collect();
+                let total_pieces = info.pieces.len();
+                for idx in 0..total_pieces {
                     download_piece(&peers, idx as u32, &info, output.as_ref()).await?;
+                    println!("downloaded {}/{} pieces", idx + 1, total_pieces);
                 }
                 Ok(())
             }

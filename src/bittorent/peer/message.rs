@@ -90,8 +90,8 @@ pub async fn send_interested(stream: &mut TcpStream) -> Result<()> {
     Ok(())
 }
 
-pub async fn wait_for_unchoke(stream: &mut TcpStream) -> Result<Vec<u8>> {
+pub async fn wait_for_unchoke(stream: &mut TcpStream) -> Result<()> {
     let msg = Message::from_stream(stream).await?;
     anyhow::ensure!(msg.id == MessageId::Unchoke);
-    Ok(msg.payload)
+    Ok(())
 }

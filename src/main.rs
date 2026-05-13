@@ -8,8 +8,6 @@ use crate::bittorent::Cli;
 async fn main() {
     let cli = Cli::parse();
 
-    eprintln!("Logs from program:");
-
     match cli.run().await {
         Ok(_) => {}
         Err(e) => eprintln!("Error: {e}"),

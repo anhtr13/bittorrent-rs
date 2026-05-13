@@ -14,9 +14,9 @@ pub struct Info {
 }
 
 impl Info {
-    pub fn decode(bencoded: Bencoding) -> Result<Self> {
-        let info_hash = sha1_hash(&bencoded.encode());
-        let Bencoding::Dictionary(mut dict) = bencoded else {
+    pub fn decode(bvalue: Bencoding) -> Result<Self> {
+        let info_hash = sha1_hash(&bvalue.encode());
+        let Bencoding::Dictionary(mut dict) = bvalue else {
             anyhow::bail!("info must be encode as dictionary")
         };
         let Some(Bencoding::Integer(length)) = dict.remove("length") else {
@@ -63,10 +63,10 @@ impl Torrent {
         let Some(Bencoding::String(announce)) = dict.remove("announce") else {
             anyhow::bail!("announce must be encode as string")
         };
-        let Some(bencoded) = dict.remove("info") else {
+        let Some(bvalue) = dict.remove("info") else {
             anyhow::bail!("info not found")
         };
-        let info = Info::decode(bencoded)?;
+        let info = Info::decode(bvalue)?;
         Ok(Self {
             announce: String::from_utf8(announce)?,
             info,
